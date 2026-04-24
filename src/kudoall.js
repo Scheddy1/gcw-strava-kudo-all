@@ -34,7 +34,6 @@ function debounce(fn, waitMs) {
 }
 
 function patchSpaNavigation(onChange) {
-    // Patch history only once per page
     if (window.__gcwKudoAllHistoryPatched) return;
     window.__gcwKudoAllHistoryPatched = true;
 
@@ -47,13 +46,14 @@ function patchSpaNavigation(onChange) {
         fire();
         return r;
     };
+
     history.replaceState = function () {
         const r = _rs.apply(this, arguments);
         fire();
         return r;
     };
-    window.addEventListener("popstate", fire);
 
+    window.addEventListener("popstate", fire);
     window.addEventListener("gcw-locationchange", onChange);
 }
 
@@ -77,7 +77,6 @@ const Strava = (() => {
     const BTN_ID = "gcw-kudo-all-strava";
 
     function getContainer() {
-        // More robust than [class="user-nav nav-group"] because class order may vary
         return document.querySelector(".user-nav.nav-group");
     }
 
@@ -171,13 +170,11 @@ const Strava = (() => {
         const container = getContainer();
         if (!container) return;
 
-        // Already injected?
         if (document.getElementById(BTN_ID)) return;
 
         const buttonLi = createButton();
         container.prepend(buttonLi);
 
-        // Event listener on <a> inside
         const a = buttonLi.querySelector(`#${BTN_ID}`);
         (a || buttonLi).addEventListener("click", kudoAllHandler);
 
@@ -189,10 +186,8 @@ const Strava = (() => {
     function init() {
         log("Strava init");
 
-        // Initial
         scheduleEnsure();
 
-        // Observe DOM changes (Strava feed is SPA)
         const obs = new MutationObserver(scheduleEnsure);
         obs.observe(document.documentElement, { childList: true, subtree: true });
 
@@ -210,10 +205,10 @@ const GC = (() => {
     const BTN_ID = "gcw-kudo-all-gc-btn";
     const STYLE_ID = "gcw-kudo-all-style";
 
+    let isRunning = false;
+
     function onNewsfeed() {
-        // Garmin uses /app/newsfeed (and some setups had /modern/newsfeed)
         const p = window.location.pathname || "";
-        // accept /app/newsfeed, /app/newsfeed/ and also /modern/newsfeed
         return (
             p === "/app/newsfeed" ||
             p.startsWith("/app/newsfeed/") ||
@@ -228,8 +223,25 @@ const GC = (() => {
         const style = document.createElement("style");
         style.id = STYLE_ID;
         style.textContent = `
-      /* Fallback floating button if header mount isn't found */
-      #${BTN_ID}.gcw-floating {
+      #${BTN_ID}.gcw-header-btn{
+        margin: 0 8px 0 0;
+        width: 36px;
+        height: 36px;
+        border-radius: 10px;
+        border: 0;
+        background: transparent;
+        cursor: pointer;
+        font-size: 18px;
+        line-height: 36px;
+        user-select: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      #${BTN_ID}.gcw-header-btn:hover{
+        background: rgba(0,0,0,.06);
+      }
+      #${BTN_ID}.gcw-floating{
         position: fixed;
         right: 16px;
         bottom: 16px;
@@ -247,165 +259,276 @@ const GC = (() => {
         document.head.appendChild(style);
     }
 
-    function findHeaderNav() {
-        // Primary: exact known class (works for many versions)
-        let nav = document.querySelector("div.header-nav") || document.querySelector(".header-nav");
-        if (nav) return nav;
+    function isVisibleElement(el) {
+        if (!el) return false;
 
-        // Fallback: any element whose class contains "header-nav" (class order / css modules)
-        const candidates = Array.from(document.querySelectorAll("div,nav,header"));
-        nav = candidates.find((el) => {
-            const cls = (el.className || "").toString();
-            return cls.includes("header-nav");
-        });
+        const st = window.getComputedStyle(el);
+        if (
+            st.display === "none" ||
+            st.visibility === "hidden" ||
+            st.opacity === "0"
+        ) {
+            return false;
+        }
 
-        return nav || null;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 && r.right > 0;
     }
 
-    function ensureMount(container) {
-        if (!container) return null;
+    function findHeader() {
+        return document.querySelector("header, [role='banner']");
+    }
+
+    function findUploadImportButton(header) {
+        if (!header) return null;
+
+        let btn = header.querySelector(
+            'button[aria-label="Aktivität hochladen oder importieren"]'
+        );
+        if (btn) return btn;
+
+        const btns = [...header.querySelectorAll("button[aria-label]")];
+        return (
+            btns.find((b) => {
+                const a = (b.getAttribute("aria-label") || "").toLowerCase();
+                return (
+                    a.includes("aktivität") ||
+                    a.includes("hochladen") ||
+                    a.includes("import") ||
+                    a.includes("upload")
+                );
+            }) || null
+        );
+    }
+
+    function ensureMount(header) {
+        if (!header) return null;
 
         let mount = document.getElementById(MOUNT_ID);
-        if (mount && mount.isConnected) return mount;
+        if (!mount) {
+            mount = document.createElement("span");
+            mount.id = MOUNT_ID;
+            mount.style.display = "inline-flex";
+            mount.style.alignItems = "center";
+        }
 
-        mount = document.createElement("div");
-        mount.id = MOUNT_ID;
-        mount.classList.add("kudo-all-nav-item");
-        mount.classList.add("header-nav-item");
-        mount.style.height = "60px";
-        mount.style.width = "50px";
-        container.prepend(mount);
+        const uploadBtn = findUploadImportButton(header);
+
+        if (uploadBtn && uploadBtn.parentElement) {
+            const parent = uploadBtn.parentElement;
+
+            if (mount.parentElement !== parent || mount.nextSibling !== uploadBtn) {
+                parent.insertBefore(mount, uploadBtn);
+            }
+
+            return mount;
+        }
+
+        if (mount.parentElement !== header) {
+            header.appendChild(mount);
+        }
 
         return mount;
     }
 
-    function findKudosIcons(root) {
-        const selector =
-            'button[class^="CommentLikeSection_socialIconWrapper"] > div[class*="CommentLikeSection_animateBox"] > i[class*="icon-heart-inverted"]';
-
-        const base = root || document;
-        return Array.from(base.querySelectorAll(selector));
-    }
-
-    function getClickableFromIcon(iconEl) {
-        if (!iconEl) return null;
-        // Garmin: clicking the wrapper button is usually safest
-        return (
-            iconEl.closest("button") ||
-            iconEl.closest("a") ||
-            iconEl.parentElement ||
-            iconEl
-        );
-    }
-
-    function createButton() {
+    function createButton(isFloating = false) {
         const label = getMessage("kudo_all", "Kudo All");
-
-        // Use <a> styled like existing header icons (your original approach)
-        const link = document.createElement("a");
-        link.href = "#";
-        link.id = BTN_ID;
-        link.className = "header-nav-link icon-heart-inverted";
-        link.setAttribute("aria-label", label);
-        link.setAttribute("data-original-title", label);
-        link.setAttribute("data-rel", "tooltip");
-        return link;
-    }
-
-    function kudoAllHandler(event) {
-        event.preventDefault();
-
-        // Don’t run outside the newsfeed
-        if (!onNewsfeed()) return;
-
-        const icons = findKudosIcons();
-        const len = icons.length;
-        if (len < 1) return;
-
-        for (let i = 0; i < len; i++) {
-            const icon = icons[i];
-            if (!icon) continue;
-
-            const clickable = getClickableFromIcon(icon);
-            if (clickable) clickable.click();
-        }
-    }
-
-    function injectFloatingFallbackIfNeeded() {
-        // If we can't find a nav container, still provide a working button
-        if (document.getElementById(BTN_ID)) return;
-
-        ensureStyles();
 
         const btn = document.createElement("button");
         btn.id = BTN_ID;
         btn.type = "button";
-        btn.classList.add("gcw-floating");
-        btn.textContent = getMessage("kudo_all", "Kudo All");
-        btn.addEventListener("click", kudoAllHandler);
+        btn.setAttribute("aria-label", label);
+        btn.title = label;
 
-        document.body.appendChild(btn);
-        log("Garmin floating fallback injected");
+        if (isFloating) {
+            btn.className = "gcw-floating";
+            btn.textContent = label;
+        } else {
+            btn.className = "gcw-header-btn";
+            btn.textContent = "♥";
+        }
+
+        return btn;
+    }
+
+    function normalizeAria(el) {
+        return (el.getAttribute("aria-label") || "")
+            .toLowerCase()
+            .trim();
+    }
+
+    function isSafeUnlikedButton(button) {
+        const aria = normalizeAria(button);
+        const pressed = (button.getAttribute("aria-pressed") || "")
+            .toLowerCase()
+            .trim();
+
+        if (pressed === "true") return false;
+
+        // Garmin DE already-liked state:
+        // "Gefällt nicht" = already liked / clicking would remove it.
+        if (aria === "gefällt nicht") return false;
+        if (aria.includes("gefällt nicht")) return false;
+
+        // Generic already-liked / remove states.
+        if (aria.includes("entfernen")) return false;
+        if (aria.includes("remove")) return false;
+        if (aria.includes("unlike")) return false;
+
+        // Only these exact states are safe to click.
+        if (aria === "gefällt mir") return true;
+        if (aria === "like") return true;
+
+        return false;
+    }
+
+    function findLikeButtons() {
+        // IMPORTANT:
+        // Do not select by CommentLikeSection wrapper class alone.
+        // Garmin uses aria-label to distinguish:
+        // - "Gefällt mir"   => unliked, safe to click
+        // - "Gefällt nicht" => already liked, must never be clicked
+        const selector = [
+            'button[aria-label="Gefällt mir"]',
+            'button[aria-label="Like"]'
+        ].join(",");
+
+        return [...new Set(Array.from(document.querySelectorAll(selector)))]
+            .filter(isVisibleElement)
+            .filter(isSafeUnlikedButton);
+    }
+
+    function clickLikeButton(el) {
+        if (!el || !el.isConnected) return;
+
+        try {
+            el.click();
+        } catch (_) {
+            try {
+                el.dispatchEvent(
+                    new MouseEvent("click", {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window,
+                    })
+                );
+            } catch (_) {
+                // ignore
+            }
+        }
+    }
+
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    async function kudoAllHandler(event) {
+        event.preventDefault();
+        if (!onNewsfeed()) return;
+        if (isRunning) return;
+
+        isRunning = true;
+
+        const uiBtn = document.getElementById(BTN_ID);
+        const oldText = uiBtn?.textContent || "♥";
+        const oldTitle = uiBtn?.title || "Kudo All";
+
+        let total = 0;
+
+        // Conservative mode:
+        // Snapshot once, click each safe button at most one time.
+        // This prevents toggling already liked buttons back off.
+        const CLICK_DELAY = 250;
+        const MAX_CLICKS = 250;
+
+        try {
+            if (uiBtn) {
+                uiBtn.textContent = "…";
+                uiBtn.title = "Kudo All läuft…";
+            }
+
+            const buttons = findLikeButtons();
+
+            for (const btn of buttons) {
+                if (total >= MAX_CLICKS) break;
+                if (!btn || !btn.isConnected) continue;
+
+                // Re-check directly before clicking.
+                if (!isSafeUnlikedButton(btn)) continue;
+
+                clickLikeButton(btn);
+                total++;
+
+                if (uiBtn) uiBtn.title = `Kudo All läuft… (${total})`;
+                await sleep(CLICK_DELAY);
+            }
+
+            if (DEBUG) console.log(`[KudoAll] Garmin clicked: ${total}`);
+        } finally {
+            isRunning = false;
+
+            if (uiBtn) {
+                uiBtn.textContent = oldText;
+                uiBtn.title = `${oldTitle} (${total})`;
+            }
+        }
     }
 
     function ensureButton() {
         if (!isHostGarmin()) return;
         if (!onNewsfeed()) return;
 
-        // Already there?
-        if (document.getElementById(BTN_ID)) return;
+        document.documentElement.dataset.gcwKudoAll = "1";
+        ensureStyles();
 
-        const nav = findHeaderNav();
+        const header = findHeader();
+        const existing = document.getElementById(BTN_ID);
 
-        if (!nav) {
-            // Header not in DOM yet (common with filters / SPA render)
-            // Try fallback so user always has a button
-            injectFloatingFallbackIfNeeded();
+        if (header) {
+            const mount = ensureMount(header);
+            if (!mount) return;
+
+            if (existing && existing.isConnected) {
+                if (existing.classList.contains("gcw-floating")) {
+                    existing.remove();
+                } else {
+                    if (existing.parentElement !== mount) {
+                        mount.appendChild(existing);
+                    }
+                    return;
+                }
+            }
+
+            const btn = createButton(false);
+            btn.addEventListener("click", kudoAllHandler);
+            mount.appendChild(btn);
+
+            log("Garmin header button injected");
             return;
         }
 
-        // If we previously injected fallback floating button, remove it and inject into header
-        const existing = document.getElementById(BTN_ID);
-        if (existing && existing.classList.contains("gcw-floating")) {
-            existing.remove();
+        if (!existing) {
+            const fb = createButton(true);
+            fb.addEventListener("click", kudoAllHandler);
+            document.body.appendChild(fb);
+            log("Garmin floating fallback injected");
         }
-
-        const mount = ensureMount(nav);
-        if (!mount) return;
-
-        // Might have been injected between checks
-        if (document.getElementById(BTN_ID)) return;
-
-        const button = createButton();
-        mount.append(button);
-        button.addEventListener("click", kudoAllHandler);
-
-        log("Garmin button injected");
     }
 
     const scheduleEnsure = debounce(ensureButton, 200);
 
     function init() {
-        log("Garmin init");
-
-        // Initial (don’t rely on window.onload)
         scheduleEnsure();
 
-        // Watch for Garmin re-renders (filter changes often remount parts of the page)
         const obs = new MutationObserver(scheduleEnsure);
         obs.observe(document.documentElement, { childList: true, subtree: true });
 
-        patchSpaNavigation(() => {
-            // give the router/render a moment
-            setTimeout(scheduleEnsure, 250);
-        });
+        patchSpaNavigation(() => setTimeout(scheduleEnsure, 250));
 
-        // Safety retry for slow renders (especially after login/redirect)
         const retry = setInterval(() => {
             ensureButton();
             if (document.getElementById(BTN_ID)) clearInterval(retry);
         }, 500);
-        setTimeout(() => clearInterval(retry), 15000);
+
+        setTimeout(() => clearInterval(retry), 20000);
     }
 
     return { init };
@@ -417,7 +540,6 @@ const GC = (() => {
 (function start() {
     log("Kudo All content script start");
 
-    // Run immediately; don't depend on onload
     if (isHostStrava()) {
         Strava.init();
     } else if (isHostGarmin()) {
