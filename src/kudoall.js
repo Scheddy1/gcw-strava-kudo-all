@@ -267,6 +267,24 @@ const GC = (() => {
       #${BTN_ID}.gcw-header-btn[data-gcw-kudo-all-liked="true"]{
         color: #d92828;
       }
+      button.gcw-activity-liked{
+        position: relative !important;
+        color: #007cc3 !important;
+      }
+      button.gcw-activity-liked svg{
+        visibility: hidden !important;
+      }
+      button.gcw-activity-liked::after{
+        content: "♥";
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #007cc3;
+        font: 24px/1 Arial, sans-serif;
+        pointer-events: none;
+      }
       #${BTN_ID}.gcw-floating{
         position: fixed;
         right: 16px;
@@ -599,11 +617,19 @@ const GC = (() => {
 
         const aria = normalizeAria(button);
         button.dataset.gcwKudoAllLiked = "true";
+        button.classList.add("gcw-activity-liked");
         button.setAttribute("aria-pressed", "true");
         button.setAttribute(
             "aria-label",
             aria === "gefällt mir" ? "Gefällt nicht" : "Unlike"
         );
+
+        // Garmin keeps the React-rendered outline SVG until the feed is loaded
+        // again. Update its paint as well; CSS supplies a filled-heart fallback.
+        for (const svgPart of button.querySelectorAll("svg, svg path")) {
+            svgPart.style.color = "#007cc3";
+            svgPart.style.fill = "#007cc3";
+        }
     }
 
     async function runWithConcurrency(items, worker) {
