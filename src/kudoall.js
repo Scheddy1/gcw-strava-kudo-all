@@ -314,17 +314,17 @@ const GC = (() => {
     }
 
     function findUploadImportButton() {
-        const exact = document.querySelector(
+        const exactButtons = document.querySelectorAll(
             [
-                '[aria-label="Aktivität hochladen oder importieren"]',
-                '[aria-label="Aktivitäten hochladen"]',
-                '[aria-label="Upload Activities"]',
-                '[title="Aktivitäten hochladen"]',
+                'button[aria-label="Aktivität hochladen oder importieren"]',
+                'button[aria-label="Aktivitäten hochladen"]',
+                'button[aria-label="Upload Activities"]',
+                'button[title="Aktivitäten hochladen"]',
             ].join(",")
         );
 
-        if (exact) {
-            return exact.closest("button, a, [role='button']") || exact;
+        for (const exactButton of exactButtons) {
+            if (isVisibleElement(exactButton)) return exactButton;
         }
 
         const candidates = document.querySelectorAll(
@@ -554,14 +554,28 @@ const GC = (() => {
                 method: "POST",
                 credentials: "include",
                 headers: {
-                    Accept: "application/json, text/plain, */*",
-                    "Content-Type": "application/json",
                     "connect-csrf-token": csrfToken,
                 },
-                body: "{}",
             });
 
-            if (response.ok || response.status === 409) return;
+            if (response.status === 409) return;
+
+            if (response.ok) {
+                let result = null;
+                try {
+                    result = await response.json();
+                } catch (_) {
+                    // A successful native Garmin like currently returns JSON.
+                }
+
+                if (result && result.conversationLikePk) return;
+
+                const error = new Error(
+                    "Garmin returned success without a conversation like"
+                );
+                error.gcwLabel = `HTTP ${response.status} ohne Like`;
+                throw error;
+            }
 
             if (response.status === 429 && attempt === 0) {
                 const retryHeader = response.headers.get("Retry-After");
