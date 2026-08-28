@@ -205,6 +205,21 @@ const GC = (() => {
     const BTN_ID = "gcw-kudo-all-gc-btn";
     const STYLE_ID = "gcw-kudo-all-style";
 
+    const ACTIVITY_LINK_SELECTOR = [
+        "a[href*='/app/activity/']",
+        "a[href*='/app/activities/']",
+        "a[href*='/modern/activity/']",
+    ].join(",");
+
+    const ACTIVITY_CARD_SELECTOR = [
+        "[class*='ActivityCard_activityContainer']",
+        "[data-testid='activity-card']",
+        "article",
+    ].join(",");
+
+    const LIKE_CONCURRENCY = 4;
+    const MAX_ACTIVITIES = 250;
+
     let isRunning = false;
 
     function onNewsfeed() {
@@ -241,6 +256,9 @@ const GC = (() => {
       #${BTN_ID}.gcw-header-btn:hover{
         background: rgba(0,0,0,.06);
       }
+      #${BTN_ID}.gcw-header-btn[data-gcw-kudo-all-liked="true"]{
+        color: #d92828;
+      }
       #${BTN_ID}.gcw-floating{
         position: fixed;
         right: 16px;
@@ -276,18 +294,21 @@ const GC = (() => {
     }
 
     function findHeader() {
-        return document.querySelector("header, [role='banner']");
+        return (
+            document.querySelector(".header-nav") ||
+            document.querySelector("header, [role='banner']")
+        );
     }
 
     function findUploadImportButton(header) {
         if (!header) return null;
 
         let btn = header.querySelector(
-            'button[aria-label="Aktivität hochladen oder importieren"]'
+            '[aria-label="Aktivität hochladen oder importieren"]'
         );
         if (btn) return btn;
 
-        const btns = [...header.querySelectorAll("button[aria-label]")];
+        const btns = [...header.querySelectorAll("[aria-label]")];
         return (
             btns.find((b) => {
                 const a = (b.getAttribute("aria-label") || "").toLowerCase();
@@ -314,14 +335,23 @@ const GC = (() => {
 
         const uploadBtn = findUploadImportButton(header);
 
-        if (uploadBtn && uploadBtn.parentElement) {
-            const parent = uploadBtn.parentElement;
+        if (uploadBtn) {
+            // The mount must be a sibling of Garmin's complete upload nav item.
+            // Putting it inside that item inherits the upload control's tooltip.
+            const uploadItem = uploadBtn.closest(
+                "li, .header-nav-item, [class*='HeaderNavItem_'], [class*='headerNavItem']"
+            );
+            const anchor = uploadItem || uploadBtn;
+            const parent = anchor.parentElement;
 
-            if (mount.parentElement !== parent || mount.nextSibling !== uploadBtn) {
-                parent.insertBefore(mount, uploadBtn);
+            if (
+                parent &&
+                (mount.parentElement !== parent || mount.nextSibling !== anchor)
+            ) {
+                parent.insertBefore(mount, anchor);
             }
 
-            return mount;
+            if (parent) return mount;
         }
 
         if (mount.parentElement !== header) {
@@ -358,6 +388,8 @@ const GC = (() => {
     }
 
     function isSafeUnlikedButton(button) {
+        if (button.dataset.gcwKudoAllLiked === "true") return false;
+
         const aria = normalizeAria(button);
         const pressed = (button.getAttribute("aria-pressed") || "")
             .toLowerCase()
@@ -382,46 +414,141 @@ const GC = (() => {
         return false;
     }
 
-    function findLikeButtons() {
-        // IMPORTANT:
-        // Do not select by CommentLikeSection wrapper class alone.
-        // Garmin uses aria-label to distinguish:
-        // - "Gefällt mir"   => unliked, safe to click
-        // - "Gefällt nicht" => already liked, must never be clicked
-        const selector = [
-            'button[aria-label="Gefällt mir"]',
-            'button[aria-label="Like"]'
-        ].join(",");
-
-        return [...new Set(Array.from(document.querySelectorAll(selector)))]
-            .filter(isVisibleElement)
-            .filter(isSafeUnlikedButton);
-    }
-
-    function clickLikeButton(el) {
-        if (!el || !el.isConnected) return;
+    function activityIdFromLink(link) {
+        if (!link) return null;
 
         try {
-            el.click();
+            const pathname = new URL(link.href, window.location.origin).pathname;
+            const match = pathname.match(
+                /\/(?:app|modern)\/activit(?:y|ies)\/(\d+)(?:\/|$)/
+            );
+            return match ? match[1] : null;
         } catch (_) {
-            try {
-                el.dispatchEvent(
-                    new MouseEvent("click", {
-                        bubbles: true,
-                        cancelable: true,
-                        view: window,
-                    })
-                );
-            } catch (_) {
-                // ignore
-            }
+            return null;
         }
+    }
+
+    function findActivityCard(link) {
+        if (!link) return null;
+
+        const explicitCard = link.closest(ACTIVITY_CARD_SELECTOR);
+        if (explicitCard) return explicitCard;
+
+        // Fail closed: never climb into a generic feed container because that
+        // could associate a comment button with the wrong activity.
+        return null;
+    }
+
+    function isCommentLikeButton(button) {
+        const cls = (button.className || "").toString().toLowerCase();
+        if (cls.includes("like-link")) return true;
+
+        return Boolean(
+            button.closest(
+                "[data-testid*='comment'], [class*='CommentItem_'], [class*='Comment_comment']"
+            )
+        );
+    }
+
+    function findPrimaryLikeButton(card) {
+        const selector = [
+            'button[aria-label="Gefällt mir"]',
+            'button[aria-label="Like"]',
+        ].join(",");
+
+        return (
+            Array.from(card.querySelectorAll(selector)).find(
+                (button) =>
+                    isVisibleElement(button) &&
+                    isSafeUnlikedButton(button) &&
+                    !isCommentLikeButton(button)
+            ) || null
+        );
+    }
+
+    function findActivityTargets() {
+        const targets = [];
+        const seenActivityIds = new Set();
+
+        for (const link of document.querySelectorAll(ACTIVITY_LINK_SELECTOR)) {
+            if (targets.length >= MAX_ACTIVITIES) break;
+
+            const activityId = activityIdFromLink(link);
+            if (!activityId || seenActivityIds.has(activityId)) continue;
+
+            const card = findActivityCard(link);
+            if (!card || !isVisibleElement(card)) continue;
+
+            const likeButton = findPrimaryLikeButton(card);
+            if (!likeButton) continue;
+
+            seenActivityIds.add(activityId);
+            targets.push({ activityId, likeButton });
+        }
+
+        return targets;
     }
 
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+    async function likeActivity(activityId) {
+        const url =
+            "/gc-api/conversation-service/conversation/like/ACTIVITY/" +
+            encodeURIComponent(activityId);
+
+        for (let attempt = 0; attempt < 2; attempt++) {
+            const response = await fetch(url, {
+                method: "POST",
+                credentials: "include",
+                headers: {
+                    Accept: "application/json, text/plain, */*",
+                    "Content-Type": "application/json",
+                    "X-Requested-With": "XMLHttpRequest",
+                },
+                body: "{}",
+            });
+
+            if (response.ok || response.status === 409) return;
+
+            if (response.status === 429 && attempt === 0) {
+                const retryAfter = Number(response.headers.get("Retry-After"));
+                await sleep(Number.isFinite(retryAfter) ? retryAfter * 1000 : 750);
+                continue;
+            }
+
+            throw new Error(`Garmin like request failed (${response.status})`);
+        }
+    }
+
+    function markLiked(button) {
+        if (!button || !button.isConnected) return;
+
+        const aria = normalizeAria(button);
+        button.dataset.gcwKudoAllLiked = "true";
+        button.setAttribute("aria-pressed", "true");
+        button.setAttribute(
+            "aria-label",
+            aria === "gefällt mir" ? "Gefällt nicht" : "Unlike"
+        );
+    }
+
+    async function runWithConcurrency(items, worker) {
+        let nextIndex = 0;
+
+        async function runWorker() {
+            while (nextIndex < items.length) {
+                const index = nextIndex++;
+                await worker(items[index], index);
+            }
+        }
+
+        const workerCount = Math.min(LIKE_CONCURRENCY, items.length);
+        await Promise.all(Array.from({ length: workerCount }, runWorker));
+    }
+
     async function kudoAllHandler(event) {
         event.preventDefault();
+        event.stopPropagation();
         if (!onNewsfeed()) return;
         if (isRunning) return;
 
@@ -431,13 +558,8 @@ const GC = (() => {
         const oldText = uiBtn?.textContent || "♥";
         const oldTitle = uiBtn?.title || "Kudo All";
 
-        let total = 0;
-
-        // Conservative mode:
-        // Snapshot once, click each safe button at most one time.
-        // This prevents toggling already liked buttons back off.
-        const CLICK_DELAY = 250;
-        const MAX_CLICKS = 250;
+        let completed = 0;
+        let failed = 0;
 
         try {
             if (uiBtn) {
@@ -445,29 +567,32 @@ const GC = (() => {
                 uiBtn.title = "Kudo All läuft…";
             }
 
-            const buttons = findLikeButtons();
+            const targets = findActivityTargets();
 
-            for (const btn of buttons) {
-                if (total >= MAX_CLICKS) break;
-                if (!btn || !btn.isConnected) continue;
+            await runWithConcurrency(targets, async (target) => {
+                try {
+                    await likeActivity(target.activityId);
+                    markLiked(target.likeButton);
+                    completed++;
+                } catch (error) {
+                    failed++;
+                    log("Garmin activity failed", target.activityId, error);
+                } finally {
+                    if (uiBtn) {
+                        uiBtn.title = `Kudo All läuft… (${completed + failed}/${targets.length})`;
+                    }
+                }
+            });
 
-                // Re-check directly before clicking.
-                if (!isSafeUnlikedButton(btn)) continue;
-
-                clickLikeButton(btn);
-                total++;
-
-                if (uiBtn) uiBtn.title = `Kudo All läuft… (${total})`;
-                await sleep(CLICK_DELAY);
-            }
-
-            if (DEBUG) console.log(`[KudoAll] Garmin clicked: ${total}`);
+            log("Garmin activities processed", { completed, failed });
         } finally {
             isRunning = false;
 
             if (uiBtn) {
                 uiBtn.textContent = oldText;
-                uiBtn.title = `${oldTitle} (${total})`;
+                uiBtn.title = failed
+                    ? `${oldTitle} (${completed} erfolgreich, ${failed} fehlgeschlagen)`
+                    : `${oldTitle} (${completed})`;
             }
         }
     }
