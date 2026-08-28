@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Persist Garmin activity kudos through the conversation API instead of relying on synthetic DOM clicks.
 - Restrict Garmin kudos to activity cards so comment likes are never included.
 - Place the Garmin header button outside the upload control to prevent the upload tooltip from leaking onto Kudo All.
+- Detect Garmin's current generated top-bar layout through the visible upload control, force the heart icon to remain visible despite inherited Garmin styles, and always provide a guarded floating fallback.
 - Process Garmin activity kudos concurrently with bounded retries for faster completion.
 
 ## [0.1]
