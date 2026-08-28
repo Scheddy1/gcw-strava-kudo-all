@@ -239,7 +239,7 @@ const GC = (() => {
         style.id = STYLE_ID;
         style.textContent = `
       #${BTN_ID}.gcw-header-btn{
-        margin: 0 8px 0 0;
+        margin: 0;
         width: 36px;
         min-width: 36px;
         height: 36px;
@@ -350,52 +350,7 @@ const GC = (() => {
         return null;
     }
 
-    function containsToolbarControl(el) {
-        return Boolean(
-            el.matches("button, a, [role='button']") ||
-                el.querySelector("button, a, [role='button']")
-        );
-    }
-
-    function findToolbar(uploadBtn) {
-        if (uploadBtn) {
-            // Garmin's current top bar is made from generated div classes. Find
-            // the nearest ancestor that contains the visible group of controls.
-            let node = uploadBtn;
-            for (let depth = 0; depth < 6 && node.parentElement; depth++) {
-                const parent = node.parentElement;
-                const controlChildren = Array.from(parent.children).filter(
-                    containsToolbarControl
-                );
-                if (controlChildren.length > 1) return parent;
-                node = parent;
-            }
-
-            const semanticToolbar = uploadBtn.closest(
-                "nav, [role='navigation'], [role='toolbar']"
-            );
-            if (semanticToolbar) return semanticToolbar;
-
-            if (uploadBtn.parentElement) return uploadBtn.parentElement;
-        }
-
-        return (
-            document.querySelector(".header-nav") ||
-            document.querySelector("header, [role='banner']")
-        );
-    }
-
-    function directChildOf(container, descendant) {
-        let child = descendant;
-        while (child && child.parentElement !== container) {
-            child = child.parentElement;
-        }
-        return child;
-    }
-
-    function ensureMount(toolbar, uploadBtn) {
-        if (!toolbar) return null;
-
+    function ensureMount(uploadBtn) {
         let mount = document.getElementById(MOUNT_ID);
         if (!mount) {
             mount = document.createElement("span");
@@ -406,25 +361,25 @@ const GC = (() => {
             mount.style.visibility = "visible";
         }
 
-        if (uploadBtn) {
-            // Mount next to the complete upload item. This remains independent
-            // of Garmin's generated class names and cannot inherit its tooltip.
-            const anchor = directChildOf(toolbar, uploadBtn);
+        // Garmin's generated containers currently place injected children in a
+        // different row. Anchor to the upload control's viewport coordinates
+        // instead, keeping Kudo All exactly 8 px to its left.
+        const rect = uploadBtn.getBoundingClientRect();
+        const buttonSize = 36;
+        const gap = 8;
 
-            if (anchor && anchor !== toolbar) {
-                if (
-                    mount.parentElement !== toolbar ||
-                    mount.nextSibling !== anchor
-                ) {
-                    toolbar.insertBefore(mount, anchor);
-                }
+        Object.assign(mount.style, {
+            position: "fixed",
+            left: `${Math.max(4, rect.left - buttonSize - gap)}px`,
+            top: `${Math.max(4, rect.top + (rect.height - buttonSize) / 2)}px`,
+            width: `${buttonSize}px`,
+            height: `${buttonSize}px`,
+            zIndex: "999999",
+            pointerEvents: "auto",
+        });
 
-                return mount;
-            }
-        }
-
-        if (mount.parentElement !== toolbar) {
-            toolbar.appendChild(mount);
+        if (mount.parentElement !== document.body) {
+            (document.body || document.documentElement).appendChild(mount);
         }
 
         return mount;
@@ -567,10 +522,32 @@ const GC = (() => {
 
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+    function getCsrfToken() {
+        return (
+            document
+                .querySelector('meta[name="csrf-token"]')
+                ?.getAttribute("content") || ""
+        ).trim();
+    }
+
+    function requestErrorLabel(error) {
+        if (error && error.gcwLabel) return error.gcwLabel;
+        if (error instanceof TypeError) return "Netzwerkfehler";
+        return "unbekannter Fehler";
+    }
+
     async function likeActivity(activityId) {
-        const url =
+        const csrfToken = getCsrfToken();
+        if (!csrfToken) {
+            const error = new Error("Garmin CSRF token not found");
+            error.gcwLabel = "CSRF-Token fehlt";
+            throw error;
+        }
+
+        const path =
             "/gc-api/conversation-service/conversation/like/ACTIVITY/" +
             encodeURIComponent(activityId);
+        const url = new URL(path, window.location.origin).href;
 
         for (let attempt = 0; attempt < 2; attempt++) {
             const response = await fetch(url, {
@@ -579,7 +556,7 @@ const GC = (() => {
                 headers: {
                     Accept: "application/json, text/plain, */*",
                     "Content-Type": "application/json",
-                    "X-Requested-With": "XMLHttpRequest",
+                    "connect-csrf-token": csrfToken,
                 },
                 body: "{}",
             });
@@ -587,12 +564,19 @@ const GC = (() => {
             if (response.ok || response.status === 409) return;
 
             if (response.status === 429 && attempt === 0) {
-                const retryAfter = Number(response.headers.get("Retry-After"));
-                await sleep(Number.isFinite(retryAfter) ? retryAfter * 1000 : 750);
+                const retryHeader = response.headers.get("Retry-After");
+                const retryAfter = retryHeader ? Number(retryHeader) : NaN;
+                await sleep(
+                    Number.isFinite(retryAfter) ? retryAfter * 1000 : 750
+                );
                 continue;
             }
 
-            throw new Error(`Garmin like request failed (${response.status})`);
+            const error = new Error(
+                `Garmin like request failed (${response.status})`
+            );
+            error.gcwLabel = `HTTP ${response.status}`;
+            throw error;
         }
     }
 
@@ -636,6 +620,7 @@ const GC = (() => {
 
         let completed = 0;
         let failed = 0;
+        const failureLabels = new Set();
 
         try {
             if (uiBtn) {
@@ -652,6 +637,7 @@ const GC = (() => {
                     completed++;
                 } catch (error) {
                     failed++;
+                    failureLabels.add(requestErrorLabel(error));
                     log("Garmin activity failed", target.activityId, error);
                 } finally {
                     if (uiBtn) {
@@ -666,9 +652,12 @@ const GC = (() => {
 
             if (uiBtn) {
                 uiBtn.textContent = oldText;
-                uiBtn.title = failed
-                    ? `${oldTitle} (${completed} erfolgreich, ${failed} fehlgeschlagen)`
-                    : `${oldTitle} (${completed})`;
+                if (failed) {
+                    const details = Array.from(failureLabels).join(", ");
+                    uiBtn.title = `${oldTitle} (${completed} erfolgreich, ${failed} fehlgeschlagen: ${details})`;
+                } else {
+                    uiBtn.title = `${oldTitle} (${completed})`;
+                }
             }
         }
     }
@@ -697,11 +686,10 @@ const GC = (() => {
         ensureStyles();
 
         const uploadBtn = findUploadImportButton();
-        const toolbar = findToolbar(uploadBtn);
         const existing = document.getElementById(BTN_ID);
 
-        if (toolbar) {
-            const mount = ensureMount(toolbar, uploadBtn);
+        if (uploadBtn) {
+            const mount = ensureMount(uploadBtn);
             if (!mount) return;
 
             if (existing && existing.isConnected) {
@@ -752,6 +740,8 @@ const GC = (() => {
         obs.observe(document.documentElement, { childList: true, subtree: true });
 
         patchSpaNavigation(() => setTimeout(scheduleEnsure, 250));
+        window.addEventListener("resize", scheduleEnsure);
+        window.addEventListener("scroll", scheduleEnsure, { passive: true });
 
         const retry = setInterval(() => {
             ensureButton();
