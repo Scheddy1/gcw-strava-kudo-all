@@ -205,6 +205,21 @@ const GC = (() => {
     const BTN_ID = "gcw-kudo-all-gc-btn";
     const STYLE_ID = "gcw-kudo-all-style";
 
+    const ACTIVITY_LINK_SELECTOR = [
+        "a[href*='/app/activity/']",
+        "a[href*='/app/activities/']",
+        "a[href*='/modern/activity/']",
+    ].join(",");
+
+    const ACTIVITY_CARD_SELECTOR = [
+        "[class*='ActivityCard_activityContainer']",
+        "[data-testid='activity-card']",
+        "article",
+    ].join(",");
+
+    const LIKE_CONCURRENCY = 4;
+    const MAX_ACTIVITIES = 250;
+
     let isRunning = false;
 
     function onNewsfeed() {
@@ -224,12 +239,20 @@ const GC = (() => {
         style.id = STYLE_ID;
         style.textContent = `
       #${BTN_ID}.gcw-header-btn{
-        margin: 0 8px 0 0;
+        margin: 0;
         width: 36px;
+        min-width: 36px;
         height: 36px;
+        padding: 0;
+        flex: 0 0 36px;
         border-radius: 10px;
         border: 0;
         background: transparent;
+        color: #111 !important;
+        opacity: 1 !important;
+        visibility: visible !important;
+        appearance: none;
+        -webkit-appearance: none;
         cursor: pointer;
         font-size: 18px;
         line-height: 36px;
@@ -240,6 +263,27 @@ const GC = (() => {
       }
       #${BTN_ID}.gcw-header-btn:hover{
         background: rgba(0,0,0,.06);
+      }
+      #${BTN_ID}.gcw-header-btn[data-gcw-kudo-all-liked="true"]{
+        color: #d92828;
+      }
+      button.gcw-activity-liked{
+        position: relative !important;
+        color: #007cc3 !important;
+      }
+      button.gcw-activity-liked svg{
+        visibility: hidden !important;
+      }
+      button.gcw-activity-liked::after{
+        content: "♥";
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #007cc3;
+        font: 24px/1 Arial, sans-serif;
+        pointer-events: none;
       }
       #${BTN_ID}.gcw-floating{
         position: fixed;
@@ -256,7 +300,7 @@ const GC = (() => {
         color: #fff;
       }
     `;
-        document.head.appendChild(style);
+        (document.head || document.documentElement).appendChild(style);
     }
 
     function isVisibleElement(el) {
@@ -275,57 +319,85 @@ const GC = (() => {
         return r.width > 0 && r.height > 0 && r.right > 0;
     }
 
-    function findHeader() {
-        return document.querySelector("header, [role='banner']");
+    function controlHint(el) {
+        return [
+            el.getAttribute("aria-label"),
+            el.getAttribute("title"),
+            el.getAttribute("data-original-title"),
+            el.getAttribute("data-tooltip"),
+        ]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase();
     }
 
-    function findUploadImportButton(header) {
-        if (!header) return null;
-
-        let btn = header.querySelector(
-            'button[aria-label="Aktivität hochladen oder importieren"]'
+    function findUploadImportButton() {
+        const exactButtons = document.querySelectorAll(
+            [
+                'button[aria-label="Aktivität hochladen oder importieren"]',
+                'button[aria-label="Aktivitäten hochladen"]',
+                'button[aria-label="Upload Activities"]',
+                'button[title="Aktivitäten hochladen"]',
+            ].join(",")
         );
-        if (btn) return btn;
 
-        const btns = [...header.querySelectorAll("button[aria-label]")];
-        return (
-            btns.find((b) => {
-                const a = (b.getAttribute("aria-label") || "").toLowerCase();
-                return (
-                    a.includes("aktivität") ||
-                    a.includes("hochladen") ||
-                    a.includes("import") ||
-                    a.includes("upload")
-                );
-            }) || null
+        for (const exactButton of exactButtons) {
+            if (isVisibleElement(exactButton)) return exactButton;
+        }
+
+        const candidates = document.querySelectorAll(
+            "button, a, [role='button'], [aria-label], [title], " +
+                "[data-original-title], [data-tooltip]"
         );
+
+        for (const candidate of candidates) {
+            const hint = controlHint(candidate);
+            if (
+                !hint.includes("hochladen") &&
+                !hint.includes("upload") &&
+                !hint.includes("import")
+            ) {
+                continue;
+            }
+
+            const control =
+                candidate.closest("button, a, [role='button']") || candidate;
+            if (isVisibleElement(control)) return control;
+        }
+
+        return null;
     }
 
-    function ensureMount(header) {
-        if (!header) return null;
-
+    function ensureMount(uploadBtn) {
         let mount = document.getElementById(MOUNT_ID);
         if (!mount) {
             mount = document.createElement("span");
             mount.id = MOUNT_ID;
             mount.style.display = "inline-flex";
             mount.style.alignItems = "center";
+            mount.style.flex = "0 0 auto";
+            mount.style.visibility = "visible";
         }
 
-        const uploadBtn = findUploadImportButton(header);
+        // Garmin's generated containers currently place injected children in a
+        // different row. Anchor to the upload control's viewport coordinates
+        // instead, keeping Kudo All exactly 8 px to its left.
+        const rect = uploadBtn.getBoundingClientRect();
+        const buttonSize = 36;
+        const gap = 8;
 
-        if (uploadBtn && uploadBtn.parentElement) {
-            const parent = uploadBtn.parentElement;
+        Object.assign(mount.style, {
+            position: "fixed",
+            left: `${Math.max(4, rect.left - buttonSize - gap)}px`,
+            top: `${Math.max(4, rect.top + (rect.height - buttonSize) / 2)}px`,
+            width: `${buttonSize}px`,
+            height: `${buttonSize}px`,
+            zIndex: "999999",
+            pointerEvents: "auto",
+        });
 
-            if (mount.parentElement !== parent || mount.nextSibling !== uploadBtn) {
-                parent.insertBefore(mount, uploadBtn);
-            }
-
-            return mount;
-        }
-
-        if (mount.parentElement !== header) {
-            header.appendChild(mount);
+        if (mount.parentElement !== document.body) {
+            (document.body || document.documentElement).appendChild(mount);
         }
 
         return mount;
@@ -343,6 +415,13 @@ const GC = (() => {
         if (isFloating) {
             btn.className = "gcw-floating";
             btn.textContent = label;
+            // Keep the rescue button visible even if Garmin blocks a style tag.
+            Object.assign(btn.style, {
+                position: "fixed",
+                right: "16px",
+                bottom: "16px",
+                zIndex: "999999",
+            });
         } else {
             btn.className = "gcw-header-btn";
             btn.textContent = "♥";
@@ -358,6 +437,8 @@ const GC = (() => {
     }
 
     function isSafeUnlikedButton(button) {
+        if (button.dataset.gcwKudoAllLiked === "true") return false;
+
         const aria = normalizeAria(button);
         const pressed = (button.getAttribute("aria-pressed") || "")
             .toLowerCase()
@@ -382,46 +463,192 @@ const GC = (() => {
         return false;
     }
 
-    function findLikeButtons() {
-        // IMPORTANT:
-        // Do not select by CommentLikeSection wrapper class alone.
-        // Garmin uses aria-label to distinguish:
-        // - "Gefällt mir"   => unliked, safe to click
-        // - "Gefällt nicht" => already liked, must never be clicked
-        const selector = [
-            'button[aria-label="Gefällt mir"]',
-            'button[aria-label="Like"]'
-        ].join(",");
-
-        return [...new Set(Array.from(document.querySelectorAll(selector)))]
-            .filter(isVisibleElement)
-            .filter(isSafeUnlikedButton);
-    }
-
-    function clickLikeButton(el) {
-        if (!el || !el.isConnected) return;
+    function activityIdFromLink(link) {
+        if (!link) return null;
 
         try {
-            el.click();
+            const pathname = new URL(link.href, window.location.origin).pathname;
+            const match = pathname.match(
+                /\/(?:app|modern)\/activit(?:y|ies)\/(\d+)(?:\/|$)/
+            );
+            return match ? match[1] : null;
         } catch (_) {
-            try {
-                el.dispatchEvent(
-                    new MouseEvent("click", {
-                        bubbles: true,
-                        cancelable: true,
-                        view: window,
-                    })
-                );
-            } catch (_) {
-                // ignore
-            }
+            return null;
         }
+    }
+
+    function findActivityCard(link) {
+        if (!link) return null;
+
+        const explicitCard = link.closest(ACTIVITY_CARD_SELECTOR);
+        if (explicitCard) return explicitCard;
+
+        // Fail closed: never climb into a generic feed container because that
+        // could associate a comment button with the wrong activity.
+        return null;
+    }
+
+    function isCommentLikeButton(button) {
+        const cls = (button.className || "").toString().toLowerCase();
+        if (cls.includes("like-link")) return true;
+
+        return Boolean(
+            button.closest(
+                "[data-testid*='comment'], [class*='CommentItem_'], [class*='Comment_comment']"
+            )
+        );
+    }
+
+    function findPrimaryLikeButton(card) {
+        const selector = [
+            'button[aria-label="Gefällt mir"]',
+            'button[aria-label="Like"]',
+        ].join(",");
+
+        return (
+            Array.from(card.querySelectorAll(selector)).find(
+                (button) =>
+                    isVisibleElement(button) &&
+                    isSafeUnlikedButton(button) &&
+                    !isCommentLikeButton(button)
+            ) || null
+        );
+    }
+
+    function findActivityTargets() {
+        const targets = [];
+        const seenActivityIds = new Set();
+
+        for (const link of document.querySelectorAll(ACTIVITY_LINK_SELECTOR)) {
+            if (targets.length >= MAX_ACTIVITIES) break;
+
+            const activityId = activityIdFromLink(link);
+            if (!activityId || seenActivityIds.has(activityId)) continue;
+
+            const card = findActivityCard(link);
+            if (!card || !isVisibleElement(card)) continue;
+
+            const likeButton = findPrimaryLikeButton(card);
+            if (!likeButton) continue;
+
+            seenActivityIds.add(activityId);
+            targets.push({ activityId, likeButton });
+        }
+
+        return targets;
     }
 
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+    function getCsrfToken() {
+        return (
+            document
+                .querySelector('meta[name="csrf-token"]')
+                ?.getAttribute("content") || ""
+        ).trim();
+    }
+
+    function requestErrorLabel(error) {
+        if (error && error.gcwLabel) return error.gcwLabel;
+        if (error instanceof TypeError) return "Netzwerkfehler";
+        return "unbekannter Fehler";
+    }
+
+    async function likeActivity(activityId) {
+        const csrfToken = getCsrfToken();
+        if (!csrfToken) {
+            const error = new Error("Garmin CSRF token not found");
+            error.gcwLabel = "CSRF-Token fehlt";
+            throw error;
+        }
+
+        const path =
+            "/gc-api/conversation-service/conversation/like/ACTIVITY/" +
+            encodeURIComponent(activityId);
+        const url = new URL(path, window.location.origin).href;
+
+        for (let attempt = 0; attempt < 2; attempt++) {
+            const response = await fetch(url, {
+                method: "POST",
+                credentials: "include",
+                headers: {
+                    "connect-csrf-token": csrfToken,
+                },
+            });
+
+            if (response.status === 409) return;
+
+            if (response.ok) {
+                let result = null;
+                try {
+                    result = await response.json();
+                } catch (_) {
+                    // A successful native Garmin like currently returns JSON.
+                }
+
+                if (result && result.conversationLikePk) return;
+
+                const error = new Error(
+                    "Garmin returned success without a conversation like"
+                );
+                error.gcwLabel = `HTTP ${response.status} ohne Like`;
+                throw error;
+            }
+
+            if (response.status === 429 && attempt === 0) {
+                const retryHeader = response.headers.get("Retry-After");
+                const retryAfter = retryHeader ? Number(retryHeader) : NaN;
+                await sleep(
+                    Number.isFinite(retryAfter) ? retryAfter * 1000 : 750
+                );
+                continue;
+            }
+
+            const error = new Error(
+                `Garmin like request failed (${response.status})`
+            );
+            error.gcwLabel = `HTTP ${response.status}`;
+            throw error;
+        }
+    }
+
+    function markLiked(button) {
+        if (!button || !button.isConnected) return;
+
+        const aria = normalizeAria(button);
+        button.dataset.gcwKudoAllLiked = "true";
+        button.classList.add("gcw-activity-liked");
+        button.setAttribute("aria-pressed", "true");
+        button.setAttribute(
+            "aria-label",
+            aria === "gefällt mir" ? "Gefällt nicht" : "Unlike"
+        );
+
+        // Garmin keeps the React-rendered outline SVG until the feed is loaded
+        // again. Update its paint as well; CSS supplies a filled-heart fallback.
+        for (const svgPart of button.querySelectorAll("svg, svg path")) {
+            svgPart.style.color = "#007cc3";
+            svgPart.style.fill = "#007cc3";
+        }
+    }
+
+    async function runWithConcurrency(items, worker) {
+        let nextIndex = 0;
+
+        async function runWorker() {
+            while (nextIndex < items.length) {
+                const index = nextIndex++;
+                await worker(items[index], index);
+            }
+        }
+
+        const workerCount = Math.min(LIKE_CONCURRENCY, items.length);
+        await Promise.all(Array.from({ length: workerCount }, runWorker));
+    }
+
     async function kudoAllHandler(event) {
         event.preventDefault();
+        event.stopPropagation();
         if (!onNewsfeed()) return;
         if (isRunning) return;
 
@@ -431,13 +658,9 @@ const GC = (() => {
         const oldText = uiBtn?.textContent || "♥";
         const oldTitle = uiBtn?.title || "Kudo All";
 
-        let total = 0;
-
-        // Conservative mode:
-        // Snapshot once, click each safe button at most one time.
-        // This prevents toggling already liked buttons back off.
-        const CLICK_DELAY = 250;
-        const MAX_CLICKS = 250;
+        let completed = 0;
+        let failed = 0;
+        const failureLabels = new Set();
 
         try {
             if (uiBtn) {
@@ -445,45 +668,68 @@ const GC = (() => {
                 uiBtn.title = "Kudo All läuft…";
             }
 
-            const buttons = findLikeButtons();
+            const targets = findActivityTargets();
 
-            for (const btn of buttons) {
-                if (total >= MAX_CLICKS) break;
-                if (!btn || !btn.isConnected) continue;
+            await runWithConcurrency(targets, async (target) => {
+                try {
+                    await likeActivity(target.activityId);
+                    markLiked(target.likeButton);
+                    completed++;
+                } catch (error) {
+                    failed++;
+                    failureLabels.add(requestErrorLabel(error));
+                    log("Garmin activity failed", target.activityId, error);
+                } finally {
+                    if (uiBtn) {
+                        uiBtn.title = `Kudo All läuft… (${completed + failed}/${targets.length})`;
+                    }
+                }
+            });
 
-                // Re-check directly before clicking.
-                if (!isSafeUnlikedButton(btn)) continue;
-
-                clickLikeButton(btn);
-                total++;
-
-                if (uiBtn) uiBtn.title = `Kudo All läuft… (${total})`;
-                await sleep(CLICK_DELAY);
-            }
-
-            if (DEBUG) console.log(`[KudoAll] Garmin clicked: ${total}`);
+            log("Garmin activities processed", { completed, failed });
         } finally {
             isRunning = false;
 
             if (uiBtn) {
                 uiBtn.textContent = oldText;
-                uiBtn.title = `${oldTitle} (${total})`;
+                if (failed) {
+                    const details = Array.from(failureLabels).join(", ");
+                    uiBtn.title = `${oldTitle} (${completed} erfolgreich, ${failed} fehlgeschlagen: ${details})`;
+                } else {
+                    uiBtn.title = `${oldTitle} (${completed})`;
+                }
             }
         }
     }
 
-    function ensureButton() {
+    function ensureFloatingButton(existing) {
+        if (existing && existing.isConnected) {
+            if (!existing.classList.contains("gcw-floating")) {
+                existing.remove();
+            } else {
+                return existing;
+            }
+        }
+
+        const fallback = createButton(true);
+        fallback.addEventListener("click", kudoAllHandler);
+        (document.body || document.documentElement).appendChild(fallback);
+        log("Garmin floating fallback injected");
+        return fallback;
+    }
+
+    function injectButton() {
         if (!isHostGarmin()) return;
         if (!onNewsfeed()) return;
 
         document.documentElement.dataset.gcwKudoAll = "1";
         ensureStyles();
 
-        const header = findHeader();
+        const uploadBtn = findUploadImportButton();
         const existing = document.getElementById(BTN_ID);
 
-        if (header) {
-            const mount = ensureMount(header);
+        if (uploadBtn) {
+            const mount = ensureMount(uploadBtn);
             if (!mount) return;
 
             if (existing && existing.isConnected) {
@@ -505,11 +751,23 @@ const GC = (() => {
             return;
         }
 
-        if (!existing) {
-            const fb = createButton(true);
-            fb.addEventListener("click", kudoAllHandler);
-            document.body.appendChild(fb);
-            log("Garmin floating fallback injected");
+        ensureFloatingButton(existing);
+    }
+
+    function ensureButton() {
+        try {
+            injectButton();
+        } catch (error) {
+            console.warn("[KudoAll] Garmin button injection failed", error);
+
+            try {
+                ensureFloatingButton(document.getElementById(BTN_ID));
+            } catch (fallbackError) {
+                console.warn(
+                    "[KudoAll] Garmin fallback injection failed",
+                    fallbackError
+                );
+            }
         }
     }
 
@@ -522,6 +780,8 @@ const GC = (() => {
         obs.observe(document.documentElement, { childList: true, subtree: true });
 
         patchSpaNavigation(() => setTimeout(scheduleEnsure, 250));
+        window.addEventListener("resize", scheduleEnsure);
+        window.addEventListener("scroll", scheduleEnsure, { passive: true });
 
         const retry = setInterval(() => {
             ensureButton();
