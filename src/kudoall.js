@@ -241,10 +241,18 @@ const GC = (() => {
       #${BTN_ID}.gcw-header-btn{
         margin: 0 8px 0 0;
         width: 36px;
+        min-width: 36px;
         height: 36px;
+        padding: 0;
+        flex: 0 0 36px;
         border-radius: 10px;
         border: 0;
         background: transparent;
+        color: #111 !important;
+        opacity: 1 !important;
+        visibility: visible !important;
+        appearance: none;
+        -webkit-appearance: none;
         cursor: pointer;
         font-size: 18px;
         line-height: 36px;
@@ -274,7 +282,7 @@ const GC = (() => {
         color: #fff;
       }
     `;
-        document.head.appendChild(style);
+        (document.head || document.documentElement).appendChild(style);
     }
 
     function isVisibleElement(el) {
@@ -293,37 +301,100 @@ const GC = (() => {
         return r.width > 0 && r.height > 0 && r.right > 0;
     }
 
-    function findHeader() {
+    function controlHint(el) {
+        return [
+            el.getAttribute("aria-label"),
+            el.getAttribute("title"),
+            el.getAttribute("data-original-title"),
+            el.getAttribute("data-tooltip"),
+        ]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase();
+    }
+
+    function findUploadImportButton() {
+        const exact = document.querySelector(
+            [
+                '[aria-label="Aktivität hochladen oder importieren"]',
+                '[aria-label="Aktivitäten hochladen"]',
+                '[aria-label="Upload Activities"]',
+                '[title="Aktivitäten hochladen"]',
+            ].join(",")
+        );
+
+        if (exact) {
+            return exact.closest("button, a, [role='button']") || exact;
+        }
+
+        const candidates = document.querySelectorAll(
+            "button, a, [role='button'], [aria-label], [title], " +
+                "[data-original-title], [data-tooltip]"
+        );
+
+        for (const candidate of candidates) {
+            const hint = controlHint(candidate);
+            if (
+                !hint.includes("hochladen") &&
+                !hint.includes("upload") &&
+                !hint.includes("import")
+            ) {
+                continue;
+            }
+
+            const control =
+                candidate.closest("button, a, [role='button']") || candidate;
+            if (isVisibleElement(control)) return control;
+        }
+
+        return null;
+    }
+
+    function containsToolbarControl(el) {
+        return Boolean(
+            el.matches("button, a, [role='button']") ||
+                el.querySelector("button, a, [role='button']")
+        );
+    }
+
+    function findToolbar(uploadBtn) {
+        if (uploadBtn) {
+            // Garmin's current top bar is made from generated div classes. Find
+            // the nearest ancestor that contains the visible group of controls.
+            let node = uploadBtn;
+            for (let depth = 0; depth < 6 && node.parentElement; depth++) {
+                const parent = node.parentElement;
+                const controlChildren = Array.from(parent.children).filter(
+                    containsToolbarControl
+                );
+                if (controlChildren.length > 1) return parent;
+                node = parent;
+            }
+
+            const semanticToolbar = uploadBtn.closest(
+                "nav, [role='navigation'], [role='toolbar']"
+            );
+            if (semanticToolbar) return semanticToolbar;
+
+            if (uploadBtn.parentElement) return uploadBtn.parentElement;
+        }
+
         return (
             document.querySelector(".header-nav") ||
             document.querySelector("header, [role='banner']")
         );
     }
 
-    function findUploadImportButton(header) {
-        if (!header) return null;
-
-        let btn = header.querySelector(
-            '[aria-label="Aktivität hochladen oder importieren"]'
-        );
-        if (btn) return btn;
-
-        const btns = [...header.querySelectorAll("[aria-label]")];
-        return (
-            btns.find((b) => {
-                const a = (b.getAttribute("aria-label") || "").toLowerCase();
-                return (
-                    a.includes("aktivität") ||
-                    a.includes("hochladen") ||
-                    a.includes("import") ||
-                    a.includes("upload")
-                );
-            }) || null
-        );
+    function directChildOf(container, descendant) {
+        let child = descendant;
+        while (child && child.parentElement !== container) {
+            child = child.parentElement;
+        }
+        return child;
     }
 
-    function ensureMount(header) {
-        if (!header) return null;
+    function ensureMount(toolbar, uploadBtn) {
+        if (!toolbar) return null;
 
         let mount = document.getElementById(MOUNT_ID);
         if (!mount) {
@@ -331,31 +402,29 @@ const GC = (() => {
             mount.id = MOUNT_ID;
             mount.style.display = "inline-flex";
             mount.style.alignItems = "center";
+            mount.style.flex = "0 0 auto";
+            mount.style.visibility = "visible";
         }
-
-        const uploadBtn = findUploadImportButton(header);
 
         if (uploadBtn) {
-            // The mount must be a sibling of Garmin's complete upload nav item.
-            // Putting it inside that item inherits the upload control's tooltip.
-            const uploadItem = uploadBtn.closest(
-                "li, .header-nav-item, [class*='HeaderNavItem_'], [class*='headerNavItem']"
-            );
-            const anchor = uploadItem || uploadBtn;
-            const parent = anchor.parentElement;
+            // Mount next to the complete upload item. This remains independent
+            // of Garmin's generated class names and cannot inherit its tooltip.
+            const anchor = directChildOf(toolbar, uploadBtn);
 
-            if (
-                parent &&
-                (mount.parentElement !== parent || mount.nextSibling !== anchor)
-            ) {
-                parent.insertBefore(mount, anchor);
+            if (anchor && anchor !== toolbar) {
+                if (
+                    mount.parentElement !== toolbar ||
+                    mount.nextSibling !== anchor
+                ) {
+                    toolbar.insertBefore(mount, anchor);
+                }
+
+                return mount;
             }
-
-            if (parent) return mount;
         }
 
-        if (mount.parentElement !== header) {
-            header.appendChild(mount);
+        if (mount.parentElement !== toolbar) {
+            toolbar.appendChild(mount);
         }
 
         return mount;
@@ -373,6 +442,13 @@ const GC = (() => {
         if (isFloating) {
             btn.className = "gcw-floating";
             btn.textContent = label;
+            // Keep the rescue button visible even if Garmin blocks a style tag.
+            Object.assign(btn.style, {
+                position: "fixed",
+                right: "16px",
+                bottom: "16px",
+                zIndex: "999999",
+            });
         } else {
             btn.className = "gcw-header-btn";
             btn.textContent = "♥";
@@ -597,18 +673,35 @@ const GC = (() => {
         }
     }
 
-    function ensureButton() {
+    function ensureFloatingButton(existing) {
+        if (existing && existing.isConnected) {
+            if (!existing.classList.contains("gcw-floating")) {
+                existing.remove();
+            } else {
+                return existing;
+            }
+        }
+
+        const fallback = createButton(true);
+        fallback.addEventListener("click", kudoAllHandler);
+        (document.body || document.documentElement).appendChild(fallback);
+        log("Garmin floating fallback injected");
+        return fallback;
+    }
+
+    function injectButton() {
         if (!isHostGarmin()) return;
         if (!onNewsfeed()) return;
 
         document.documentElement.dataset.gcwKudoAll = "1";
         ensureStyles();
 
-        const header = findHeader();
+        const uploadBtn = findUploadImportButton();
+        const toolbar = findToolbar(uploadBtn);
         const existing = document.getElementById(BTN_ID);
 
-        if (header) {
-            const mount = ensureMount(header);
+        if (toolbar) {
+            const mount = ensureMount(toolbar, uploadBtn);
             if (!mount) return;
 
             if (existing && existing.isConnected) {
@@ -630,11 +723,23 @@ const GC = (() => {
             return;
         }
 
-        if (!existing) {
-            const fb = createButton(true);
-            fb.addEventListener("click", kudoAllHandler);
-            document.body.appendChild(fb);
-            log("Garmin floating fallback injected");
+        ensureFloatingButton(existing);
+    }
+
+    function ensureButton() {
+        try {
+            injectButton();
+        } catch (error) {
+            console.warn("[KudoAll] Garmin button injection failed", error);
+
+            try {
+                ensureFloatingButton(document.getElementById(BTN_ID));
+            } catch (fallbackError) {
+                console.warn(
+                    "[KudoAll] Garmin fallback injection failed",
+                    fallbackError
+                );
+            }
         }
     }
 
