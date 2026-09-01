@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Match Garmin's native empty-body activity-like request and require a returned conversation-like ID before reporting success.
 - Ignore Garmin's hidden upload tooltip when locating the visible header control.
 - Fill confirmed activity hearts immediately while Garmin's React feed still shows its stale outline SVG.
+- Cache every unliked Garmin activity encountered while scrolling so one final click processes the complete read feed, even when virtualized cards are unmounted.
+- Reset the Garmin result tooltip on every run instead of appending previous counters repeatedly.
 - Process Garmin activity kudos concurrently with bounded retries for faster completion.
 
 ## [0.1]
