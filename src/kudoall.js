@@ -218,9 +218,11 @@ const GC = (() => {
     ].join(",");
 
     const LIKE_CONCURRENCY = 4;
-    const MAX_ACTIVITIES = 250;
+    const MAX_ACTIVITIES = 500;
 
     let isRunning = false;
+    const pendingActivityIds = new Set();
+    let liveLikeButtons = new Map();
 
     function onNewsfeed() {
         const p = window.location.pathname || "";
@@ -499,43 +501,85 @@ const GC = (() => {
         );
     }
 
-    function findPrimaryLikeButton(card) {
+    function isKnownLikedButton(button) {
+        const aria = normalizeAria(button);
+        const pressed = (button.getAttribute("aria-pressed") || "")
+            .toLowerCase()
+            .trim();
+
+        return (
+            pressed === "true" ||
+            aria.includes("gefällt nicht") ||
+            aria.includes("entfernen") ||
+            aria.includes("remove") ||
+            aria.includes("unlike")
+        );
+    }
+
+    function findPrimaryLikeControl(card) {
         const selector = [
             'button[aria-label="Gefällt mir"]',
             'button[aria-label="Like"]',
+            'button[aria-label*="Gefällt nicht"]',
+            'button[aria-label*="Unlike"]',
+            'button[aria-label*="Remove"]',
         ].join(",");
 
         return (
             Array.from(card.querySelectorAll(selector)).find(
                 (button) =>
-                    isVisibleElement(button) &&
-                    isSafeUnlikedButton(button) &&
-                    !isCommentLikeButton(button)
+                    !isCommentLikeButton(button) &&
+                    (isSafeUnlikedButton(button) ||
+                        isKnownLikedButton(button))
             ) || null
         );
     }
 
-    function findActivityTargets() {
-        const targets = [];
+    function collectActivityTargets() {
         const seenActivityIds = new Set();
+        const currentLiveButtons = new Map();
 
         for (const link of document.querySelectorAll(ACTIVITY_LINK_SELECTOR)) {
-            if (targets.length >= MAX_ACTIVITIES) break;
-
             const activityId = activityIdFromLink(link);
             if (!activityId || seenActivityIds.has(activityId)) continue;
 
             const card = findActivityCard(link);
-            if (!card || !isVisibleElement(card)) continue;
+            if (!card) continue;
 
-            const likeButton = findPrimaryLikeButton(card);
+            const likeButton = findPrimaryLikeControl(card);
             if (!likeButton) continue;
 
             seenActivityIds.add(activityId);
-            targets.push({ activityId, likeButton });
+
+            if (isSafeUnlikedButton(likeButton)) {
+                if (
+                    pendingActivityIds.has(activityId) ||
+                    pendingActivityIds.size < MAX_ACTIVITIES
+                ) {
+                    pendingActivityIds.add(activityId);
+                    currentLiveButtons.set(activityId, likeButton);
+                }
+            } else if (isKnownLikedButton(likeButton)) {
+                pendingActivityIds.delete(activityId);
+            }
         }
 
-        return targets;
+        liveLikeButtons = currentLiveButtons;
+        log("Garmin activity cache updated", {
+            pending: pendingActivityIds.size,
+            mounted: liveLikeButtons.size,
+        });
+    }
+
+    function findActivityTargets() {
+        collectActivityTargets();
+
+        return Array.from(pendingActivityIds)
+            .slice(0, MAX_ACTIVITIES)
+            .map((activityId) => ({
+                activityId,
+                likeButton: liveLikeButtons.get(activityId) || null,
+            }));
     }
 
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -656,7 +700,7 @@ const GC = (() => {
 
         const uiBtn = document.getElementById(BTN_ID);
         const oldText = uiBtn?.textContent || "♥";
-        const oldTitle = uiBtn?.title || "Kudo All";
+        const baseTitle = getMessage("kudo_all", "Kudo All");
 
         let completed = 0;
         let failed = 0;
@@ -673,6 +717,8 @@ const GC = (() => {
             await runWithConcurrency(targets, async (target) => {
                 try {
                     await likeActivity(target.activityId);
+                    pendingActivityIds.delete(target.activityId);
+                    liveLikeButtons.delete(target.activityId);
                     markLiked(target.likeButton);
                     completed++;
                 } catch (error) {
@@ -694,9 +740,9 @@ const GC = (() => {
                 uiBtn.textContent = oldText;
                 if (failed) {
                     const details = Array.from(failureLabels).join(", ");
-                    uiBtn.title = `${oldTitle} (${completed} erfolgreich, ${failed} fehlgeschlagen: ${details})`;
+                    uiBtn.title = `${baseTitle} (${completed} erfolgreich, ${failed} fehlgeschlagen: ${details})`;
                 } else {
-                    uiBtn.title = `${oldTitle} (${completed})`;
+                    uiBtn.title = `${baseTitle} (${completed})`;
                 }
             }
         }
@@ -772,16 +818,59 @@ const GC = (() => {
     }
 
     const scheduleEnsure = debounce(ensureButton, 200);
+    let collectScheduled = false;
+
+    function scheduleCollect() {
+        if (collectScheduled) return;
+        collectScheduled = true;
+
+        const scheduleFrame =
+            window.requestAnimationFrame ||
+            ((callback) => window.setTimeout(callback, 16));
+
+        scheduleFrame(() => {
+            collectScheduled = false;
+            if (onNewsfeed()) collectActivityTargets();
+        });
+    }
+
+    function handleLocationChange() {
+        if (!onNewsfeed()) {
+            pendingActivityIds.clear();
+            liveLikeButtons.clear();
+        }
+
+        window.setTimeout(() => {
+            scheduleEnsure();
+            scheduleCollect();
+        }, 250);
+    }
+
+    function handleViewportChange() {
+        scheduleEnsure();
+        scheduleCollect();
+    }
 
     function init() {
         scheduleEnsure();
+        scheduleCollect();
 
-        const obs = new MutationObserver(scheduleEnsure);
-        obs.observe(document.documentElement, { childList: true, subtree: true });
+        const obs = new MutationObserver(() => {
+            scheduleEnsure();
+            scheduleCollect();
+        });
+        obs.observe(document.documentElement, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ["href", "aria-label", "aria-pressed"],
+        });
 
-        patchSpaNavigation(() => setTimeout(scheduleEnsure, 250));
-        window.addEventListener("resize", scheduleEnsure);
-        window.addEventListener("scroll", scheduleEnsure, { passive: true });
+        patchSpaNavigation(handleLocationChange);
+        window.addEventListener("resize", handleViewportChange);
+        window.addEventListener("scroll", handleViewportChange, {
+            passive: true,
+        });
 
         const retry = setInterval(() => {
             ensureButton();
