@@ -75,17 +75,121 @@ function isHostGarmin() {
 // =========================
 const Strava = (() => {
     const BTN_ID = "gcw-kudo-all-strava";
+    const STYLE_ID = "gcw-kudo-all-strava-style";
+    const BUTTON_HEIGHT = 34;
 
-    function getContainer() {
-        return document.querySelector(".user-nav.nav-group");
+    let lastAnchorRight = null;
+    let lastAnchorTop = 8;
+
+    function ensureStyles() {
+        if (document.getElementById(STYLE_ID)) return;
+
+        const style = document.createElement("style");
+        style.id = STYLE_ID;
+        style.textContent = `
+      #${BTN_ID}.gcw-strava-fixed{
+        position: fixed;
+        top: 8px;
+        right: 16px;
+        z-index: 999999;
+        height: ${BUTTON_HEIGHT}px;
+        min-width: 108px;
+        padding: 0 12px;
+        border: 1px solid #d5d5d5;
+        border-radius: 4px;
+        background: #fff;
+        color: #242428;
+        box-shadow: 0 1px 2px rgba(0,0,0,.08);
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        font: 600 13px/1 system-ui, -apple-system, Segoe UI, Roboto, Arial;
+        white-space: nowrap;
+        user-select: none;
+      }
+      #${BTN_ID}.gcw-strava-fixed:hover{
+        background: #f7f7f7;
+        border-color: #b8b8b8;
+      }
+      #${BTN_ID} .gcw-strava-heart{
+        color: #fc5200;
+        font-size: 18px;
+        line-height: 1;
+      }
+    `;
+        (document.head || document.documentElement).appendChild(style);
+    }
+
+    function findGiftControl() {
+        const pattern = /geschenk|gift|cadeau|regalo|present/i;
+        const candidates = Array.from(
+            document.querySelectorAll("button, a, [role='button']")
+        ).filter((element) => {
+            const hint = [
+                element.textContent,
+                element.getAttribute("aria-label"),
+                element.getAttribute("title"),
+            ]
+                .filter(Boolean)
+                .join(" ");
+            const rect = element.getBoundingClientRect();
+
+            return (
+                pattern.test(hint) &&
+                rect.width > 20 &&
+                rect.height > 20 &&
+                rect.top < 160
+            );
+        });
+
+        candidates.sort((a, b) => {
+            const buttonRankA = a.tagName === "BUTTON" ? 0 : 1;
+            const buttonRankB = b.tagName === "BUTTON" ? 0 : 1;
+            if (buttonRankA !== buttonRankB) return buttonRankA - buttonRankB;
+
+            const rectA = a.getBoundingClientRect();
+            const rectB = b.getBoundingClientRect();
+            return rectA.width * rectA.height - rectB.width * rectB.height;
+        });
+
+        return candidates[0] || null;
+    }
+
+    function positionButton(button) {
+        const giftControl = findGiftControl();
+
+        if (giftControl) {
+            const rect = giftControl.getBoundingClientRect();
+            lastAnchorRight = Math.max(8, window.innerWidth - rect.left + 8);
+
+            if (rect.top >= 0 && rect.bottom <= 160) {
+                lastAnchorTop = Math.max(
+                    4,
+                    rect.top + (rect.height - BUTTON_HEIGHT) / 2
+                );
+            }
+        }
+
+        if (lastAnchorRight !== null) {
+            button.style.right = `${lastAnchorRight}px`;
+            button.style.top = `${lastAnchorTop}px`;
+        } else {
+            // Safe fallback if Strava removes the promotional gift control.
+            button.style.right = "16px";
+            button.style.top = "64px";
+        }
     }
 
     function findKudosButtons(container) {
         const selector =
-            "button[data-testid='kudos_button'] > svg[data-testid='unfilled_kudos']";
+            "button[data-testid='kudos_button']";
 
         const root = container || document;
-        return Array.from(root.querySelectorAll(selector));
+        return Array.from(root.querySelectorAll(selector)).filter((button) =>
+            button.querySelector("svg[data-testid='unfilled_kudos']")
+        );
     }
 
     function createFilter(athleteLink) {
@@ -125,60 +229,56 @@ const Strava = (() => {
     function createButton() {
         const label = getMessage("kudo_all", "Kudo All");
 
-        const navItemLi = document.createElement("li");
-        const navItemA = document.createElement("a");
+        const button = document.createElement("button");
+        button.id = BTN_ID;
+        button.type = "button";
+        button.className = "gcw-strava-fixed";
+        button.setAttribute("aria-label", label);
+        button.title = label;
 
-        navItemLi.className = "nav-item";
-        navItemLi.style.marginRight = "10px";
+        const icon = document.createElement("span");
+        icon.className = "gcw-strava-heart";
+        icon.setAttribute("aria-hidden", "true");
+        icon.textContent = "♥";
 
-        navItemA.href = "#";
-        navItemA.className = "btn btn-default btn-sm empty";
-        navItemA.id = BTN_ID;
+        const text = document.createElement("span");
+        text.className = "ka-progress";
+        text.textContent = label;
 
-        const navItemIcon = document.createElement("span");
-        navItemIcon.className = "app-icon icon-kudo";
-        navItemIcon.style.marginRight = "5px";
+        button.append(icon, text);
 
-        const navItemText = document.createElement("span");
-        navItemText.className = "ka-progress text-caption1";
-        navItemText.textContent = label;
-
-        navItemA.append(navItemIcon);
-        navItemA.append(navItemText);
-        navItemLi.append(navItemA);
-
-        return navItemLi;
+        return button;
     }
 
     function kudoAllHandler(event) {
         event.preventDefault();
+        event.stopPropagation();
 
-        const icons = getKudosButtons();
-        const len = icons.length;
+        const buttons = getKudosButtons();
+        const len = buttons.length;
         if (len < 1) return;
 
         for (let i = 0; i < len; i++) {
-            const item = icons[i];
-            if (!item) continue;
-
-            const parentItem = item.parentElement;
-            if (parentItem) parentItem.click();
+            const button = buttons[i];
+            if (button && button.isConnected) button.click();
         }
+
+        const uiButton = document.getElementById(BTN_ID);
+        if (uiButton) uiButton.title = `Kudo All (${len})`;
     }
 
     function ensureButton() {
-        const container = getContainer();
-        if (!container) return;
+        ensureStyles();
 
-        if (document.getElementById(BTN_ID)) return;
+        let button = document.getElementById(BTN_ID);
+        if (!button) {
+            button = createButton();
+            button.addEventListener("click", kudoAllHandler);
+            (document.body || document.documentElement).appendChild(button);
+            log("Strava button injected");
+        }
 
-        const buttonLi = createButton();
-        container.prepend(buttonLi);
-
-        const a = buttonLi.querySelector(`#${BTN_ID}`);
-        (a || buttonLi).addEventListener("click", kudoAllHandler);
-
-        log("Strava button injected");
+        positionButton(button);
     }
 
     const scheduleEnsure = debounce(ensureButton, 200);
@@ -192,6 +292,8 @@ const Strava = (() => {
         obs.observe(document.documentElement, { childList: true, subtree: true });
 
         patchSpaNavigation(scheduleEnsure);
+        window.addEventListener("resize", scheduleEnsure);
+        window.addEventListener("scroll", scheduleEnsure, { passive: true });
     }
 
     return { init };
@@ -218,9 +320,11 @@ const GC = (() => {
     ].join(",");
 
     const LIKE_CONCURRENCY = 4;
-    const MAX_ACTIVITIES = 250;
+    const MAX_ACTIVITIES = 500;
 
     let isRunning = false;
+    const pendingActivityIds = new Set();
+    let liveLikeButtons = new Map();
 
     function onNewsfeed() {
         const p = window.location.pathname || "";
@@ -499,43 +603,85 @@ const GC = (() => {
         );
     }
 
-    function findPrimaryLikeButton(card) {
+    function isKnownLikedButton(button) {
+        const aria = normalizeAria(button);
+        const pressed = (button.getAttribute("aria-pressed") || "")
+            .toLowerCase()
+            .trim();
+
+        return (
+            pressed === "true" ||
+            aria.includes("gefällt nicht") ||
+            aria.includes("entfernen") ||
+            aria.includes("remove") ||
+            aria.includes("unlike")
+        );
+    }
+
+    function findPrimaryLikeControl(card) {
         const selector = [
             'button[aria-label="Gefällt mir"]',
             'button[aria-label="Like"]',
+            'button[aria-label*="Gefällt nicht"]',
+            'button[aria-label*="Unlike"]',
+            'button[aria-label*="Remove"]',
         ].join(",");
 
         return (
             Array.from(card.querySelectorAll(selector)).find(
                 (button) =>
-                    isVisibleElement(button) &&
-                    isSafeUnlikedButton(button) &&
-                    !isCommentLikeButton(button)
+                    !isCommentLikeButton(button) &&
+                    (isSafeUnlikedButton(button) ||
+                        isKnownLikedButton(button))
             ) || null
         );
     }
 
-    function findActivityTargets() {
-        const targets = [];
+    function collectActivityTargets() {
         const seenActivityIds = new Set();
+        const currentLiveButtons = new Map();
 
         for (const link of document.querySelectorAll(ACTIVITY_LINK_SELECTOR)) {
-            if (targets.length >= MAX_ACTIVITIES) break;
-
             const activityId = activityIdFromLink(link);
             if (!activityId || seenActivityIds.has(activityId)) continue;
 
             const card = findActivityCard(link);
-            if (!card || !isVisibleElement(card)) continue;
+            if (!card) continue;
 
-            const likeButton = findPrimaryLikeButton(card);
+            const likeButton = findPrimaryLikeControl(card);
             if (!likeButton) continue;
 
             seenActivityIds.add(activityId);
-            targets.push({ activityId, likeButton });
+
+            if (isSafeUnlikedButton(likeButton)) {
+                if (
+                    pendingActivityIds.has(activityId) ||
+                    pendingActivityIds.size < MAX_ACTIVITIES
+                ) {
+                    pendingActivityIds.add(activityId);
+                    currentLiveButtons.set(activityId, likeButton);
+                }
+            } else if (isKnownLikedButton(likeButton)) {
+                pendingActivityIds.delete(activityId);
+            }
         }
 
-        return targets;
+        liveLikeButtons = currentLiveButtons;
+        log("Garmin activity cache updated", {
+            pending: pendingActivityIds.size,
+            mounted: liveLikeButtons.size,
+        });
+    }
+
+    function findActivityTargets() {
+        collectActivityTargets();
+
+        return Array.from(pendingActivityIds)
+            .slice(0, MAX_ACTIVITIES)
+            .map((activityId) => ({
+                activityId,
+                likeButton: liveLikeButtons.get(activityId) || null,
+            }));
     }
 
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -656,7 +802,7 @@ const GC = (() => {
 
         const uiBtn = document.getElementById(BTN_ID);
         const oldText = uiBtn?.textContent || "♥";
-        const oldTitle = uiBtn?.title || "Kudo All";
+        const baseTitle = getMessage("kudo_all", "Kudo All");
 
         let completed = 0;
         let failed = 0;
@@ -673,6 +819,8 @@ const GC = (() => {
             await runWithConcurrency(targets, async (target) => {
                 try {
                     await likeActivity(target.activityId);
+                    pendingActivityIds.delete(target.activityId);
+                    liveLikeButtons.delete(target.activityId);
                     markLiked(target.likeButton);
                     completed++;
                 } catch (error) {
@@ -694,9 +842,9 @@ const GC = (() => {
                 uiBtn.textContent = oldText;
                 if (failed) {
                     const details = Array.from(failureLabels).join(", ");
-                    uiBtn.title = `${oldTitle} (${completed} erfolgreich, ${failed} fehlgeschlagen: ${details})`;
+                    uiBtn.title = `${baseTitle} (${completed} erfolgreich, ${failed} fehlgeschlagen: ${details})`;
                 } else {
-                    uiBtn.title = `${oldTitle} (${completed})`;
+                    uiBtn.title = `${baseTitle} (${completed})`;
                 }
             }
         }
@@ -772,16 +920,59 @@ const GC = (() => {
     }
 
     const scheduleEnsure = debounce(ensureButton, 200);
+    let collectScheduled = false;
+
+    function scheduleCollect() {
+        if (collectScheduled) return;
+        collectScheduled = true;
+
+        const scheduleFrame =
+            window.requestAnimationFrame ||
+            ((callback) => window.setTimeout(callback, 16));
+
+        scheduleFrame(() => {
+            collectScheduled = false;
+            if (onNewsfeed()) collectActivityTargets();
+        });
+    }
+
+    function handleLocationChange() {
+        if (!onNewsfeed()) {
+            pendingActivityIds.clear();
+            liveLikeButtons.clear();
+        }
+
+        window.setTimeout(() => {
+            scheduleEnsure();
+            scheduleCollect();
+        }, 250);
+    }
+
+    function handleViewportChange() {
+        scheduleEnsure();
+        scheduleCollect();
+    }
 
     function init() {
         scheduleEnsure();
+        scheduleCollect();
 
-        const obs = new MutationObserver(scheduleEnsure);
-        obs.observe(document.documentElement, { childList: true, subtree: true });
+        const obs = new MutationObserver(() => {
+            scheduleEnsure();
+            scheduleCollect();
+        });
+        obs.observe(document.documentElement, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ["href", "aria-label", "aria-pressed"],
+        });
 
-        patchSpaNavigation(() => setTimeout(scheduleEnsure, 250));
-        window.addEventListener("resize", scheduleEnsure);
-        window.addEventListener("scroll", scheduleEnsure, { passive: true });
+        patchSpaNavigation(handleLocationChange);
+        window.addEventListener("resize", handleViewportChange);
+        window.addEventListener("scroll", handleViewportChange, {
+            passive: true,
+        });
 
         const retry = setInterval(() => {
             ensureButton();
